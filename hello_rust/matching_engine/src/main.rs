@@ -1,101 +1,92 @@
-use std::thread;
-use std::sync::{Arc, Mutex};
-use std::sync::mpsc;
-use std::time::Duration;
+/*
+use tokio::net::TcpListener;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-#[derive(Debug, Clone)]
+#[tokio::main]
+async fn main() {
+    let listener = TcpListener::bind("127.0.0.1:8080").await.unwrap();
+    println!("Order server listening on port 8080");
+    
+    loop {
+        let (mut socket, addr) = listener.accept().await.unwrap();
+        println!("New connection from: {}", addr);
+        
+        tokio::spawn(async move {
+            let mut buf = vec![0; 1024];
+            loop {
+                let n = socket.read(&mut buf).await.unwrap();
+                if n==0 {
+                    println!("Connection closed");
+                    return;
+                }
+                
+                let order = String::from_utf8_lossy(&buf[..n]);
+                println!("Received order: {}", order);
+                socket.write_all(b"Order received\n").await.unwrap();
+            }
+        });
+    }
+}
+*/
 
+// 2nd code:
+
+use tokio::net::TcpListener;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+#[derive(Debug)]
 struct Order {
-    id: u32,
     symbol: String,
     price: f64,
     quantity: u32,
     side: String,
 }
-impl Order {
-    fn new(id: u32, symbol: &str, price: f64, quantity: u32, side: &str) -> Order {
-        Order {
-            id,
-            symbol:String::from(symbol),
-            price,
-            quantity,
-            side: String::from(side),
-        }
+
+fn parse_order(input: &str) -> Option<Order> {
+    let parts: Vec<&str> = input.trim().split_whitespace().collect();
+    if parts.len()  !=4 {
+        return None;
     }
+    Some(Order {
+        side: parts[0].to_string(),
+        symbol: parts[1].to_string(),
+        price: parts[2].parse().ok()?,
+        quantity: parts[3].parse().ok()?,
+    })
 }
 
-struct OrderBook{
-    bids: Vec<Order>,
-    asks: Vec<Order>,
-}
-
-impl OrderBook{
-    fn new() -> OrderBook {
-        OrderBook{
-            bids: Vec::new(),
-            asks: Vec::new(),
-        }
-    }
+#[tokio::main]
+async fn main() {
+    let listener = TcpListener::bind("127.0.0.1:8080").await.unwrap();
+    println!("Order server listening on port 8080");
     
-    fn add_order(&mut self, order: Order) {
-        if order.side == "BUY" {
-            self.bids.push(order);
-        } else {
-            self.asks.push(order);
-        }
-    }
+    loop {
+        let (mut socket,addr) = listener.accept().await.unwrap();
+        println!("New connection from: {}", addr);
     
-    fn match_orders(&mut self) {
-        self.bids.sort_by(|a, b| b.price.partial_cmp(&a.price).unwrap());
-        self.asks.sort_by(|a, b| a.price.partial_cmp(&b.price).unwrap());
-        
-        while !self.bids.is_empty() && !self.asks.is_empty() {
-            let bid = &self.bids[0];
-            let ask = &self.asks[0];
+    
+        tokio::spawn(async move {
+            let mut buf = vec![0; 1024];
+            loop {
+                let n = socket.read(&mut buf).await.unwrap();
+                if n == 0 {return; }
             
-            if bid.price >= ask.price{
-                let qty = bid.quantity.min(ask.quantity);
-                println!("MATCH: {} units of {} at ${}", qty, bid.symbol, ask.price);
-                self.bids.remove(0);
-                self.asks.remove(0);
-            } else {
-                break;
+                let input = String::from_utf8_lossy(&buf[..n]);
+                match parse_order(&input) {
+                    Some(order) => {
+                        println!("Parsed order: {:?}", order);
+                        socket.write_all(
+                            format!("ACK: {} {} x{} @ ${}\n",
+                                order.side, order.symbol,
+                                order.quantity, order.price)
+                            .as_bytes())
+                        .await.unwrap();
+                    }
+                    None => {
+                        socket.write_all(b"ERROR: invalid order format\n").await.unwrap();
+                    }
+                }
             }
-        }
-        
+        });
     }
-    fn print_book(&self){
-        println!("BIDS: {:?}", self.bids.len());
-        println!("ASLS: {:?}", self.asks.len());
-    }
-}
-    fn main() {
-    let book = Arc::new(Mutex::new(OrderBook::new()));
-    let (sender, receiver) = mpsc::channel::<Order>();
-    
-    let book_clone = Arc::clone(&book);
-    let engine = thread::spawn(move || {
-        for order in receiver {
-            println!("Engine received: {:?}", order);
-            let mut b = book_clone.lock().unwrap();
-            b.add_order(order);
-            b.match_orders();
-        }
-    });
-    let orders = vec![
-    Order::new(1, "NVDA", 500.0, 10, "BUY"),
-    Order::new(2, "NVDA", 495.0, 5, "SELL"),
-    Order::new(3, "AAPL", 150.0, 20, "BUY"),
-    Order::new(4, "AAPL", 148.0, 20, "SELL"),
-    ];
-    for order in orders{
-        sender.send(order).unwrap();
-        thread::sleep(Duration::from_millis(10))
-    }
-    
-    drop(sender);
-    engine.join().unwrap();
-    
-    let b = book.lock().unwrap();
-    b.print_book();
 }
