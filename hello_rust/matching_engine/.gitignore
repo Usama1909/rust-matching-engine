@@ -1,0 +1,6 @@
+/target
+criterion/
+benches/target
+*.json
+*.txt
+*.html

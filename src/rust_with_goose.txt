@@ -1,0 +1,41 @@
+Here's the full picture of how I'd approach it.
+
+**What "the core" actually is.** Strip Goose to its skeleton and it's five components: a scheduler (run detection every 5 min), a skill engine (run detectors, collect diagnoses), a notifier (Telegram send + the /approve command loop), an executor (apply fix → smoke test → rollback on failure), and a state store (incidents, fix memory, skill tiers). That's the whole agent. Everything else — the LLM reasoning layer, the ARIA-specific skills — sits on top and doesn't need to be Rust.
+
+**The architecture decision that makes this work: skills as config, not code.** This is the key move. In Python-Goose, skills are hardcoded functions. In Rust-Goose, the binary should know *nothing* about ARIA. A skill becomes a TOML/YAML file:
+
+```toml
+[skill]
+name = "realized_drawdown"
+mode = "alert_only"
+interval_secs = 300
+
+[detector]
+type = "sql"
+query = "SELECT SUM(pnl_usd) AS pnl FROM closed_trades WHERE exit_time > NOW() - INTERVAL '24 hours'"
+trigger_when = "pnl < -50"
+
+[alert]
+severity = "CRITICAL"
+message = "24h realized P&L is {pnl} USD"
+```
+
+The binary loads whatever skill files it finds in a directory. That single decision is what turns "my ARIA tool" into "a product anyone drops next to any bot" — users write skills for *their* schema without touching your code. Start with two detector types — `sql` and `command` (run a shell command, check exit code/output against a threshold) — and you can already express most of what Goose does today.
+
+**The crates you'd use** (this is a very standard stack, all mature): `tokio` for the async runtime and the interval timer, `sqlx` for Postgres (compile-time checked queries — it catches the `closed_at` vs `exit_time` class of bug at *build time*, which should make you smile after tonight), `serde` + `toml` for skill config parsing, `reqwest` for the Telegram API, `teloxide` if you want the full bot command loop (/approve, /clear) instead of raw HTTP, `tracing` for structured logs, `clap` for the CLI, and `anyhow`/`thiserror` for error handling. SQLite for Goose's own state via `sqlx` too, so the agent has zero external dependencies of its own.
+
+**Build it in phases, each one shippable:**
+
+*Phase 1 — the heartbeat (a weekend).* Binary that loads skill TOMLs, runs SQL detectors on a tokio interval, prints diagnoses. No Telegram, no fixes. You'll learn structs, enums, serde, async basics, and Result-based error handling — and Rust's error handling will force the exact discipline tonight exposed as missing: a query failure in Rust is a `Result::Err` you *must* handle; the language won't let you silently treat it as "not triggered."
+
+*Phase 2 — the voice (a week).* Telegram alerts with debouncing, severity formatting, the incident table in SQLite. Now it's already a useful product: a watch-and-alert agent. This alone is your "drop next to any bot" MVP.
+
+*Phase 3 — the hands (two-plus weeks).* The /approve loop, fix execution, smoke tests, rollback. This is the hard, senior-level part — process management, timeouts, concurrent state — and you'll learn ownership properly here because the borrow checker will fight you over shared incident state across async tasks. Losing those fights is the actual Rust education.
+
+*Phase 4 — the memory and tiers.* Port the fix-memory and JUNIOR/ASSOCIATE promotion logic. Then `cargo build --release --target x86_64-unknown-linux-musl` gives you one ~5 MB static binary: `scp` it to any VPS, no pip, no venv, no Python version hell. That's the distribution pitch made real.
+
+**Two pieces of restraint that will save you.** First, don't port the LLM reasoning layer to Rust — keep that in Python or call the Claude API from Rust later; the core's job is to be a small, bulletproof sentinel. Second, run Rust-Goose *alongside* Python-Goose on aria-trainer for weeks, both watching the same things, before you ever retire the Python one. Tonight's lesson applies to the rewrite too: never trust a monitor you haven't seen catch something.
+
+Realistic timeline at mid-level Rust: 6–10 weeks of evenings to Phase 3. And the portfolio story writes itself — "production Rust agent, async, zero-dependency static binary, guarding a live trading system" is exactly the artifact that backs up the product *and* the job hunt.
+
+Save this plan somewhere — and tomorrow we still start with the P&L queries and the Python `realized_drawdown` skill, because ARIA needs eyes *this week*, not in week ten. Goodnight!

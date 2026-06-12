@@ -5,3 +5,8 @@ edition = "2024"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "matching_benchmark"
+harness = false
