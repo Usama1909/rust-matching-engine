@@ -1,6 +1,4 @@
 /target
-criterion/
-benches/target
+*.exe
+*.pdb
 *.json
-*.txt
-*.html
